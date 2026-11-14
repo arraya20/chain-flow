@@ -97,11 +97,6 @@
       font-weight: 700;
       cursor: pointer;
     }
-    button.secondary {
-      color: var(--text);
-      background: transparent;
-      border-color: var(--border);
-    }
     button:disabled { cursor: wait; opacity: 0.65; }
     #status { min-height: 1.5rem; font-weight: 650; }
     #status[data-state="success"] { color: var(--success); }
@@ -129,26 +124,26 @@
   <main>
     <header class="intro">
       <h1>Pharos Transfer Readiness</h1>
-      <p class="muted">Check whether a supplied observation set covers a PROS transfer, estimated gas, and retained reserve.</p>
+      <p class="muted">Get a fresh Pharos Chain MCP observation set and check whether it covers a PROS transfer, estimated gas, and retained reserve.</p>
     </header>
 
     <section class="notice" aria-labelledby="scope-heading">
-      <h2 id="scope-heading">What this page does</h2>
-      <p>This reviewer companion calculates a decision from values entered below. It does not call Chain MCP or invoke the Skill Engine. Supplied observations are not independently verified.</p>
-      <p>For a genuine agent run, follow <code>SKILL.md</code> and use the installed Pharos Skill Engine and official Chain MCP. This flow never signs or broadcasts transactions.</p>
+      <h2 id="scope-heading">Live, read-only check</h2>
+      <p>Each submission calls the official public Pharos Chain MCP server for the latest block, sender balance, gas price, and transfer gas estimate. It does not sign or broadcast transactions.</p>
+      <p>This dashboard performs the live MCP read and deterministic calculation. The separate agent composition is described in <code>SKILL.md</code>; this page does not itself run an agent or invoke the Skill Engine.</p>
     </section>
 
     <section class="panel" aria-labelledby="flow-heading">
-      <h2 id="flow-heading">Agent flow</h2>
+      <h2 id="flow-heading">Live evaluation sequence</h2>
       <ol class="flow">
-        <li>One request loads the installed readiness Skill.</li>
-        <li>The Skill obtains balance, gas price, and gas estimate from Chain MCP in the same run.</li>
-        <li>The Skill passes those observations and the request constraints to the exact-arithmetic evaluator, then checks its result.</li>
+        <li>Enter the sender, recipient, transfer amount, and reserve.</li>
+        <li>The server creates a project run ID and queries Chain MCP for a block, pinned balance, gas price, and estimate.</li>
+        <li>The evaluator calculates readiness and returns the block time plus the actual fetch time.</li>
       </ol>
     </section>
 
     <section class="panel" aria-labelledby="form-heading">
-      <h2 id="form-heading">Evaluate supplied observations</h2>
+      <h2 id="form-heading">Check transfer readiness</h2>
       <form id="readiness-form">
         <fieldset>
           <legend>Transfer constraints</legend>
@@ -169,76 +164,12 @@
               Retained reserve (PROS)
               <input name="reservePros" inputmode="decimal" placeholder="0.0001" required>
             </label>
-            <label>
-              Gas-price ceiling (wei)
-              <input name="gasPriceCeilingWei" inputmode="numeric" placeholder="100000000000" required>
-            </label>
-            <label>
-              Gas buffer (basis points)
-              <input name="bufferBps" inputmode="numeric" value="2000" required>
-              <span class="help">2000 basis points = 20%.</span>
-            </label>
           </div>
         </fieldset>
 
-        <fieldset>
-          <legend>Chain observations</legend>
-          <p class="help">Enter observations captured in one run. Integer chain values must be decimal strings to preserve precision.</p>
-          <div class="fields">
-            <label>
-              Run ID
-              <input name="runId" autocomplete="off" required>
-            </label>
-            <label>
-              Chain ID
-              <input name="chainId" inputmode="numeric" value="1672" required>
-            </label>
-            <label>
-              Block number
-              <input name="blockNumber" inputmode="numeric" required>
-            </label>
-            <label>
-              Observation time (ISO 8601)
-              <input name="observedAt" placeholder="2026-11-14T12:00:00Z" required>
-            </label>
-            <label>
-              Sender balance (wei)
-              <input name="balanceWei" inputmode="numeric" required>
-            </label>
-            <label>
-              Address used for balance
-              <input name="balanceAddress" autocomplete="off" spellcheck="false" required>
-            </label>
-            <label>
-              Block used for balance
-              <input name="balanceBlockNumber" inputmode="numeric" required>
-            </label>
-            <label>
-              Gas price (wei)
-              <input name="gasPriceWei" inputmode="numeric" required>
-            </label>
-            <label>
-              Estimated gas (units)
-              <input name="estimatedGas" inputmode="numeric" required>
-            </label>
-            <label>
-              Estimate from
-              <input name="estimateFrom" autocomplete="off" spellcheck="false" required>
-            </label>
-            <label>
-              Estimate to
-              <input name="estimateTo" autocomplete="off" spellcheck="false" required>
-            </label>
-            <label>
-              Estimated transfer value (wei)
-              <input name="estimatedValueWei" inputmode="numeric" required>
-            </label>
-          </div>
-        </fieldset>
-
+        <p class="help">Defaults: Pharos Pacific Mainnet (chain ID 1672), gas-price ceiling 100 gwei, and 20% gas buffer. A new run ID and observation times are generated for each check.</p>
         <div class="actions">
-          <button type="submit" id="evaluate-button">Evaluate readiness</button>
-          <button type="button" class="secondary" id="example-button">Load illustrative example</button>
+          <button type="submit" id="evaluate-button">Fetch live data and check</button>
         </div>
       </form>
     </section>
@@ -246,7 +177,7 @@
     <section class="panel" aria-labelledby="result-heading">
       <h2 id="result-heading">Decision</h2>
       <p id="status" role="status" aria-live="polite">No evaluation yet.</p>
-      <pre id="result" aria-label="Evaluation result">Submit observations to see the calculation.</pre>
+      <pre id="result" aria-label="Evaluation result">Submit a transfer request to fetch live observations.</pre>
     </section>
   </main>
 
@@ -256,77 +187,24 @@
     const status = document.getElementById("status");
     const submitButton = document.getElementById("evaluate-button");
 
-    function formValues() {
-      const values = new FormData(form);
-      return Object.fromEntries(values.entries());
-    }
-
     function setStatus(message, state) {
       status.textContent = message;
       status.dataset.state = state;
     }
 
-    document.getElementById("example-button").addEventListener("click", () => {
-      const sample = {
-        sender: "0x1111111111111111111111111111111111111111",
-        recipient: "0x2222222222222222222222222222222222222222",
-        amountPros: "1",
-        reservePros: "0.5",
-        gasPriceCeilingWei: "2000000000",
-        bufferBps: "2000",
-        runId: "illustrative-example-not-live",
-        chainId: "1672",
-        blockNumber: "123",
-        observedAt: "2026-01-01T00:00:00.000Z",
-        balanceWei: "2000000000000000000",
-        balanceAddress: "0x1111111111111111111111111111111111111111",
-        balanceBlockNumber: "123",
-        gasPriceWei: "1000000000",
-        estimatedGas: "21000",
-        estimateFrom: "0x1111111111111111111111111111111111111111",
-        estimateTo: "0x2222222222222222222222222222222222222222",
-        estimatedValueWei: "1000000000000000000"
-      };
-
-      for (const [name, value] of Object.entries(sample)) {
-        form.elements.namedItem(name).value = value;
-      }
-      result.textContent = "Illustrative values loaded. They are not live or historical chain observations.";
-      setStatus("Example loaded; no chain data was fetched.", "");
-    });
-
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       submitButton.disabled = true;
-      setStatus("Evaluating supplied observations…", "");
+      setStatus("Requesting live observations from Pharos Chain MCP…", "");
       result.textContent = "";
 
-      const values = formValues();
+      const values = Object.fromEntries(new FormData(form).entries());
       const body = {
         constraints: {
           sender: values.sender,
           recipient: values.recipient,
           amountPros: values.amountPros,
-          reservePros: values.reservePros,
-          gasPriceCeilingWei: values.gasPriceCeilingWei,
-          bufferBps: /^\d+$/.test(values.bufferBps)
-            ? Number(values.bufferBps)
-            : values.bufferBps
-        },
-        observations: {
-          runId: values.runId,
-          chainId: values.chainId,
-          blockNumber: values.blockNumber,
-          observedAt: values.observedAt,
-          balanceWei: values.balanceWei,
-          balanceAddress: values.balanceAddress,
-          balanceBlockNumber: values.balanceBlockNumber,
-          gasPriceWei: values.gasPriceWei,
-          estimatedGas: values.estimatedGas,
-          estimateFrom: values.estimateFrom,
-          estimateTo: values.estimateTo,
-          estimatedValueWei: values.estimatedValueWei,
-          source: "user_supplied"
+          reservePros: values.reservePros
         }
       };
 
@@ -344,7 +222,8 @@
         result.textContent = JSON.stringify(payload.result, null, 2);
         const decision = payload.result.status;
         const state = decision === "READY" ? "success" : decision === "NOT_READY" ? "error" : "";
-        setStatus(`${decision}: result uses user-supplied, unverified observations.`, state);
+        const fetchedAt = payload.result.provenance.fetchedAt;
+        setStatus(`${decision}: Pharos MCP data fetched at ${fetchedAt}.`, state);
       } catch (error) {
         result.textContent = error instanceof Error ? error.message : "The evaluation request failed.";
         setStatus("Evaluation failed; no decision was produced.", "error");

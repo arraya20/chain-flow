@@ -54,7 +54,7 @@ function parseUnsignedInteger(value, { allowZero = true } = {}) {
   return !allowZero && parsed === 0n ? null : parsed;
 }
 
-function validateConstraints(constraints) {
+export function validateReadinessConstraints(constraints) {
   if (!isRecord(constraints)) {
     throw new InputValidationError("constraints must be an object");
   }
@@ -96,7 +96,7 @@ function isValidTimestamp(value) {
     Number.isFinite(Date.parse(value));
 }
 
-function createProvenance(observations) {
+function createProvenance(observations, sourceMetadata) {
   const sourceClaim = typeof observations?.source === "string" ? observations.source : null;
   const blockNumber = parseUnsignedInteger(observations?.blockNumber, { allowZero: false });
   const chainId = parseUnsignedInteger(observations?.chainId);
@@ -105,25 +105,26 @@ function createProvenance(observations) {
     : null;
 
   return {
-    kind: "user_supplied",
-    verified: false,
-    sourceClaim,
+    kind: sourceMetadata?.kind ?? "user_supplied",
+    verified: sourceMetadata?.verified ?? false,
+    source: sourceMetadata?.source ?? sourceClaim,
     runId: typeof observations?.runId === "string" ? observations.runId : null,
     chainId: chainId?.toString() ?? null,
     blockNumber: blockNumber?.toString() ?? null,
-    observedAt
+    observedAt,
+    fetchedAt: sourceMetadata?.fetchedAt ?? null
   };
 }
 
-export function evaluateReadiness(input) {
+export function evaluateReadiness(input, sourceMetadata) {
   if (!isRecord(input)) {
     throw new InputValidationError("request must be an object");
   }
 
   const { amountWei, reserveWei, gasPriceCeilingWei, bufferBps } =
-    validateConstraints(input.constraints);
+    validateReadinessConstraints(input.constraints);
   const observations = isRecord(input.observations) ? input.observations : {};
-  const provenance = createProvenance(observations);
+  const provenance = createProvenance(observations, sourceMetadata);
   const missing = [];
   const invalid = [];
 
@@ -191,11 +192,44 @@ export function evaluateReadiness(input) {
     invalid.push("estimatedValueWei");
   }
 
+  const missingOnlyGasEstimate = missing.length === 1 &&
+    missing[0] === "estimatedGas" &&
+    invalid.length === 0;
+  if (missingOnlyGasEstimate) {
+    const minimumRequiredWei = amountWei + reserveWei;
+    const minimumShortfallWei = minimumRequiredWei > balanceWei
+      ? minimumRequiredWei - balanceWei
+      : 0n;
+    const reasons = [];
+    if (minimumShortfallWei > 0n) reasons.push("BALANCE_BELOW_TRANSFER_AND_RESERVE");
+    if (gasPriceWei > gasPriceCeilingWei) reasons.push("GAS_PRICE_ABOVE_CEILING");
+
+    if (reasons.length > 0) {
+      return {
+        status: "NOT_READY",
+        reasons,
+        missing,
+        amountWei: amountWei.toString(),
+        reserveWei: reserveWei.toString(),
+        balanceWei: balanceWei.toString(),
+        gasPriceWei: gasPriceWei.toString(),
+        gasPriceCeilingWei: gasPriceCeilingWei.toString(),
+        minimumRequiredWei: minimumRequiredWei.toString(),
+        minimumShortfallWei: minimumShortfallWei.toString(),
+        observationErrors: { estimateGas: "Gas estimate unavailable; no value was substituted." },
+        provenance
+      };
+    }
+  }
+
   if (missing.length > 0 || invalid.length > 0) {
     return {
       status: "INSUFFICIENT_DATA",
       missing: [...new Set(missing)],
       invalid: [...new Set(invalid)],
+      ...(missingOnlyGasEstimate
+        ? { observationErrors: { estimateGas: "Gas estimate unavailable; no value was substituted." } }
+        : {}),
       provenance
     };
   }

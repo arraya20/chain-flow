@@ -1,229 +1,224 @@
-import { spawnSync } from "node:child_process";
 import { test, run, assert, equal } from "./harness.mjs";
-import { onRequestPost } from "../functions/api/flow.js";
+import { handleFlowPost } from "../functions/api/flow.js";
+import { evaluateReadiness } from "../src/readiness.mjs";
 
-const observations = {
-  runId: "run-test-1",
-  chainId: 1672,
-  blockNumber: 21051707,
-  observedAt: "2026-11-14T00:00:00.000Z",
-  balanceWei: "2000000000000000000",
-  balanceAddress: "0x1111111111111111111111111111111111111111",
-  balanceBlockNumber: "21051707",
-  gasPriceWei: "1000000000",
-  estimatedGas: "21000",
-  estimateFrom: "0x1111111111111111111111111111111111111111",
-  estimateTo: "0x2222222222222222222222222222222222222222",
-  estimatedValueWei: "1000000000000000000",
-  source: "historical"
-};
-
-const constraints = {
-  sender: "0x1111111111111111111111111111111111111111",
-  recipient: "0x2222222222222222222222222222222222222222",
-  amountPros: "1",
-  reservePros: "0.5",
-  gasPriceCeilingWei: "2000000000",
+const requestConstraints = {
+  sender: "0x4117b9737f64d816be36f6c18c72409c98e4737c",
+  recipient: "0x15ddce897d76ac39c188ade4d353711a60395315",
+  amountPros: "0.0001",
+  reservePros: "0.0001",
+  gasPriceCeilingWei: "100000000000",
   bufferBps: 2000
 };
 
-async function postEvaluation(body) {
-  const response = await onRequestPost({
-    request: new Request("https://example.test/api/flow", {
+const blockTimestamp = "2026-11-15T00:00:00.000Z";
+const blockTimestampHex = `0x${Math.floor(Date.parse(blockTimestamp) / 1000).toString(16)}`;
+
+function createMcpClient(overrides = {}) {
+  const calls = [];
+  let closed = false;
+  const results = {
+    get_chain_info: { chainId: 1672, latestBlock: "21051707", nativeSymbol: "PROS" },
+    get_block: {
+      number: "0x141393b",
+      timestamp: blockTimestampHex,
+      hash: `0x${"a".repeat(64)}`
+    },
+    get_balance: {
+      address: requestConstraints.sender,
+      balanceWei: "988631830399322430",
+      symbol: "PROS"
+    },
+    get_gas_price: { gasPriceWei: "10000000000" },
+    estimate_gas: { gas: "21000" },
+    ...overrides
+  };
+
+  return {
+    calls,
+    get closed() {
+      return closed;
+    },
+    async close() {
+      closed = true;
+    },
+    async callTool({ name, arguments: args }) {
+      calls.push({ name, args });
+      const result = results[name];
+      if (result instanceof Error) throw result;
+      if (result?.isError) return { isError: true, content: [{ type: "text", text: result.message }] };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    }
+  };
+}
+
+async function postFlow(constraints = requestConstraints, overrides = {}) {
+  const client = createMcpClient(overrides.results);
+  const response = await handleFlowPost(
+    new Request("https://example.test/api/flow", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    })
-  });
-  return { status: response.status, body: await response.json() };
+      body: JSON.stringify({ constraints })
+    }),
+    {
+      createMcpClient: overrides.createMcpClient ?? (async () => client),
+      createRunId: () => "chain-flow-test-run",
+      now: () => new Date("2026-11-15T00:00:05.000Z")
+    }
+  );
+  return { status: response.status, body: await response.json(), client };
 }
 
 const unitTests = [
-  test("reviewer companion reports readiness and exact buffered gas cost", async () => {
-    const response = await postEvaluation({ constraints, observations });
+  test("live evaluator reads required Chain MCP tools and assesses the current transfer", async () => {
+    const response = await postFlow();
 
     equal(response.status, 200);
     equal(response.body.result.status, "READY");
-    equal(response.body.result.bufferedGas, "25200");
-    equal(response.body.result.modeledGasCostWei, "25200000000000");
-    equal(response.body.result.provenance.kind, "user_supplied");
-    equal(response.body.result.provenance.verified, false);
+    equal(response.body.result.provenance.runId, "chain-flow-test-run");
+    equal(response.body.result.provenance.kind, "live_chain_mcp");
+    equal(response.body.result.provenance.source, "https://mcp.pharos.xyz/mcp");
+    equal(response.body.result.provenance.verified, true);
     equal(response.body.result.provenance.blockNumber, "21051707");
+    equal(response.body.result.provenance.observedAt, blockTimestamp);
+    equal(response.body.result.provenance.fetchedAt, "2026-11-15T00:00:05.000Z");
+    equal(response.body.result.modeledGasCostWei, "252000000000000");
+    equal(response.body.result.totalRequiredWei, "452000000000000");
+    equal(response.client.closed, true);
+    equal(response.client.calls.map(({ name }) => name).join(","),
+      "get_chain_info,get_block,get_balance,get_gas_price,estimate_gas");
   }),
 
-  test("reviewer companion rounds buffered gas up to the next whole unit", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, estimatedGas: "21001" }
+  test("live evaluator pins balance to the observed block and estimates the requested transfer", async () => {
+    const response = await postFlow();
+    const getBlock = response.client.calls[1];
+    const getBalance = response.client.calls[2];
+    const estimateGas = response.client.calls[4];
+
+    equal(getBlock.args.block, "21051707");
+    equal(getBlock.args.includeTransactions, false);
+    equal(getBalance.args.address, requestConstraints.sender);
+    equal(getBalance.args.block, "21051707");
+    equal(estimateGas.args.transaction.from, requestConstraints.sender);
+    equal(estimateGas.args.transaction.to, requestConstraints.recipient);
+    equal(estimateGas.args.transaction.value, "0x5af3107a4000");
+  }),
+
+  test("live evaluator rejects an unsupported chain and closes its MCP session", async () => {
+    const response = await postFlow(requestConstraints, {
+      results: {
+        get_chain_info: { chainId: 1, latestBlock: "100", nativeSymbol: "ETH" }
+      }
     });
 
-    equal(response.body.result.bufferedGas, "25202");
+    equal(response.status, 502);
+    equal(response.body.ok, false);
+    equal(response.client.calls.length, 1);
+    equal(response.client.closed, true);
   }),
 
-  test("reviewer companion calculates large buffer values without number rounding", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, bufferBps: Number.MAX_SAFE_INTEGER },
-      observations: { ...observations, estimatedGas: "10000" }
-    });
-
-    equal(response.body.result.bufferedGas, "9007199254750991");
-  }),
-
-  test("reviewer companion accepts an exactly sufficient balance", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, balanceWei: "1500025200000000000" }
-    });
-
-    equal(response.body.result.status, "READY");
-    equal(response.body.result.shortfallWei, "0");
-  }),
-
-  test("reviewer companion reports insufficient balance with exact shortfall", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, balanceWei: "1500000000000000000" }
-    });
-
-    equal(response.body.result.status, "NOT_READY");
-    equal(response.body.result.shortfallWei, "25200000000000");
-  }),
-
-  test("reviewer companion rejects a balance observation for another sender", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, balanceAddress: "0x3333333333333333333333333333333333333333" }
-    });
-
-    equal(response.body.result.status, "INSUFFICIENT_DATA");
-    assert(response.body.result.invalid.includes("balanceAddress"));
-  }),
-
-  test("reviewer companion rejects balance pinned to a different block", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, balanceBlockNumber: "21051708" }
-    });
-
-    equal(response.body.result.status, "INSUFFICIENT_DATA");
-    assert(response.body.result.invalid.includes("balanceBlockNumber"));
-  }),
-
-  test("reviewer companion rejects a gas estimate for a different transfer", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, estimatedValueWei: "2000000000000000000" }
-    });
-
-    equal(response.body.result.status, "INSUFFICIENT_DATA");
-    assert(response.body.result.invalid.includes("estimatedValueWei"));
-  }),
-
-  test("reviewer companion rejects a gas price above the requested ceiling", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, gasPriceCeilingWei: "500000000" },
-      observations
-    });
-
-    equal(response.body.result.status, "NOT_READY");
-    assert(response.body.result.reasons.includes("GAS_PRICE_ABOVE_CEILING"));
-  }),
-
-  test("reviewer companion fails closed when a required observation is missing", async () => {
-    const incomplete = { ...observations };
-    delete incomplete.estimatedGas;
-    const response = await postEvaluation({ constraints, observations: incomplete });
-
-    equal(response.body.result.status, "INSUFFICIENT_DATA");
-    assert(response.body.result.missing.includes("estimatedGas"));
-  }),
-
-  test("reviewer companion rejects malformed PROS amounts as client errors", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, amountPros: "1.0000000000000000001" },
-      observations
-    });
+  test("live evaluator rejects malformed constraints without calling Chain MCP", async () => {
+    const response = await postFlow({ ...requestConstraints, sender: "invalid" });
 
     equal(response.status, 400);
     equal(response.body.ok, false);
+    equal(response.client.calls.length, 0);
+    equal(response.client.closed, false);
   }),
 
-  test("reviewer companion rejects unreasonably long numeric inputs", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, amountPros: "9".repeat(129) },
-      observations
+  test("live evaluator surfaces MCP tool errors instead of fabricating a decision", async () => {
+    const response = await postFlow(requestConstraints, {
+      results: { get_gas_price: { isError: true, message: "upstream unavailable" } }
     });
 
-    equal(response.status, 400);
+    equal(response.status, 502);
+    equal(response.body.ok, false);
+    equal(response.body.result, undefined);
+    equal(response.client.closed, true);
   }),
 
-  test("reviewer companion rejects an invalid sender address", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, sender: "not-an-address" },
-      observations
+  test("live evaluator can conclude not ready when transfer plus reserve already exceed balance", async () => {
+    const response = await postFlow(requestConstraints, {
+      results: {
+        get_balance: {
+          address: requestConstraints.sender,
+          balanceWei: "100000000000000",
+          symbol: "PROS"
+        },
+        estimate_gas: { isError: true, message: "insufficient funds" }
+      }
     });
 
-    equal(response.status, 400);
+    equal(response.status, 200);
+    equal(response.body.result.status, "NOT_READY");
+    assert(response.body.result.reasons.includes("BALANCE_BELOW_TRANSFER_AND_RESERVE"));
+    equal(response.body.result.missing.includes("estimatedGas"), true);
+    equal(response.body.result.provenance.runId, "chain-flow-test-run");
   }),
 
-  test("reviewer companion rejects oversized request bodies", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations,
-      padding: "x".repeat(17000)
+  test("live evaluator reports insufficient data when failed gas estimation cannot determine readiness", async () => {
+    const response = await postFlow(requestConstraints, {
+      results: { estimate_gas: { isError: true, message: "temporary RPC error" } }
     });
+
+    equal(response.status, 200);
+    equal(response.body.result.status, "INSUFFICIENT_DATA");
+    assert(response.body.result.missing.includes("estimatedGas"));
+    equal(response.body.result.observationErrors.estimateGas, "Gas estimate unavailable; no value was substituted.");
+  }),
+
+  test("live evaluator rejects oversized request bodies", async () => {
+    const response = await handleFlowPost(
+      new Request("https://example.test/api/flow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ constraints: requestConstraints, extra: "x".repeat(17000) })
+      }),
+      { createMcpClient: async () => { throw new Error("should not be called"); } }
+    );
 
     equal(response.status, 413);
   }),
 
-  test("reviewer companion requires the gas-price ceiling as a decimal string", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, gasPriceCeilingWei: 2000000000 },
-      observations
-    });
+  test("live evaluator requires a JSON content type", async () => {
+    const response = await handleFlowPost(
+      new Request("https://example.test/api/flow", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ constraints: requestConstraints })
+      }),
+      { createMcpClient: async () => { throw new Error("should not be called"); } }
+    );
 
-    equal(response.status, 400);
+    equal(response.status, 415);
   }),
 
-  test("reviewer companion rejects null instead of defaulting the gas buffer", async () => {
-    const response = await postEvaluation({
-      constraints: { ...constraints, bufferBps: null },
-      observations
+  test("readiness evaluator still uses exact integer arithmetic", () => {
+    const result = evaluateReadiness({
+      constraints: requestConstraints,
+      observations: {
+        runId: "chain-flow-test-run",
+        chainId: "1672",
+        blockNumber: "21051707",
+        observedAt: blockTimestamp,
+        fetchedAt: "2026-11-15T00:00:05.000Z",
+        balanceWei: "988631830399322430",
+        balanceAddress: requestConstraints.sender,
+        balanceBlockNumber: "21051707",
+        gasPriceWei: "10000000000",
+        estimatedGas: "21000",
+        estimateFrom: requestConstraints.sender,
+        estimateTo: requestConstraints.recipient,
+        estimatedValueWei: "100000000000000",
+        source: "pharos_mcp"
+      }
     });
 
-    equal(response.status, 400);
-  }),
-
-  test("reviewer companion marks unsupported-chain observations insufficient", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, chainId: 1 }
-    });
-
-    equal(response.body.result.status, "INSUFFICIENT_DATA");
-    assert(response.body.result.missing.includes("chainId"));
-  }),
-
-  test("reviewer companion requires an ISO 8601 observation timestamp", async () => {
-    const response = await postEvaluation({
-      constraints,
-      observations: { ...observations, observedAt: "January 1, 2026" }
-    });
-
-    equal(response.body.result.status, "INSUFFICIENT_DATA");
-    assert(response.body.result.missing.includes("observedAt"));
-  }),
-
-  test("Skill evaluator CLI reads one JSON request from stdin", () => {
-    const processResult = spawnSync("node", ["scripts/evaluate-readiness.mjs"], {
-      input: JSON.stringify({ constraints, observations }),
-      encoding: "utf8"
-    });
-
-    equal(processResult.status, 0, processResult.stderr);
-    const result = JSON.parse(processResult.stdout);
     equal(result.status, "READY");
-    equal(result.provenance.runId, observations.runId);
+    equal(result.bufferedGas, "25200");
+    equal(result.modeledGasCostWei, "252000000000000");
   })
 ];
 

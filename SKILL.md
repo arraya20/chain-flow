@@ -5,7 +5,7 @@ description: Assess whether a Pharos Pacific Mainnet wallet can make a native PR
 
 # Pharos Transfer Readiness
 
-This is a read-only Skill. For each request, create one run ID and assess whether the sender can transfer the requested native PROS amount, pay modeled gas, and retain the requested reserve.
+This is a read-only Skill. For each request, create one `chain-flow-<uuid>` run ID and assess whether the sender can transfer the requested native PROS amount, pay modeled gas, and retain the requested reserve.
 
 ## Required sequence
 
@@ -13,7 +13,7 @@ This is a read-only Skill. For each request, create one run ID and assess whethe
    If the natural-language request and structured values disagree, or a required value cannot be determined, ask for clarification before making chain calls.
 2. Load and follow the installed official `pharos-skill-engine` instructions. If it is unavailable, state that the Skill Engine was not loaded; do not claim a composed run.
 3. Use official Pharos Chain MCP in this same run. Call `get_chain_info` and require chain ID `1672` (Pacific Mainnet). Obtain a block with `get_block`, then call `get_balance` for the sender at that block. Call `get_gas_price` and `estimate_gas` for the native transfer. Record the exact tool outputs and their run ID. If an observation cannot be pinned to the same block, disclose that limitation.
-4. Normalize those exact outputs and the request to this shape. Include the addresses and value used in the balance/estimate calls so the evaluator can reject observations for a different sender, block, or transfer:
+4. Normalize those exact outputs and the request to this shape. The values below are placeholders for the required shape, not chain observations. Include the addresses and value used in the balance/estimate calls so the evaluator can reject observations for a different sender, block, or transfer:
 
    ```json
    {
@@ -26,7 +26,7 @@ This is a read-only Skill. For each request, create one run ID and assess whethe
        "bufferBps": 2000
      },
      "observations": {
-       "runId": "one-run-id",
+       "runId": "chain-flow-one-unique-uuid",
        "chainId": "1672",
        "blockNumber": "123",
        "observedAt": "2026-11-14T12:00:00.000Z",
@@ -59,4 +59,4 @@ Return `READY` only when the balance covers `totalRequiredWei` and the observed 
 
 Gas estimates are not guarantees. Never request keys, sign, broadcast, fund an account, deploy a contract, or call `send_raw_transaction`.
 
-The web page is a deterministic evaluator for user-supplied values. It does not invoke this Skill or fetch Chain MCP data, and it marks supplied observations as unverified.
+The dashboard independently fetches live data through official Pharos Chain MCP for a read-only check. It does not invoke this Skill or the Skill Engine runtime; a dashboard result is not a genuine agent-loaded Skill run.
