@@ -1,0 +1,15 @@
+{
+  "name": "skill-chain-flow",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Read-only Pharos transfer readiness Skill and Chain MCP companion",
+  "scripts": {
+    "test": "node test/index.test.mjs",
+    "check": "node --check src/readiness.mjs && node --check scripts/evaluate-readiness.mjs && node --check functions/api/flow.js",
+    "dev": "npx wrangler pages dev public --port=8788",
+    "start": "npx wrangler pages dev public --port=8788"
+  },
+  "keywords": ["pharos", "skillengine", "chain-mcp", "composition", "ai-agent"],
+  "author": "Pharos Builder",
+  "license": "MIT"
+}
