@@ -63,7 +63,7 @@ The dashboard is a Cloudflare Pages project with a Pages Function in `functions/
 
 1. Push this repository to GitHub.
 2. In the Cloudflare dashboard, create a Pages project and connect it to `arraya20/chain-flow`.
-3. Set the production branch to `main` and the build output directory to `public`. No build command is required.
+3. Set the production branch to `main`, build command to `npm ci`, and build output directory to `public`. The build command installs `@modelcontextprotocol/sdk` before Pages bundles `functions/`.
 4. Cloudflare detects `functions/` at the repository root and deploys `/api/flow` alongside the static assets.
 5. Attach the custom domain `chain-flow.nampharos.web.id`, or use the generated `*.pages.dev` URL.
 
