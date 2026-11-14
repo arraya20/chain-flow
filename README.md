@@ -1,5 +1,7 @@
 # Pharos Transfer Readiness
 
+Live demo: https://chain-flow.nampharos.web.id/
+
 This project contains a read-only Skill + Chain MCP flow and a live dashboard that queries the official Pharos Chain MCP endpoint. The readiness result uses exact integer arithmetic for a native PROS transfer, modeled gas, and retained reserve.
 
 ## Flow
@@ -57,11 +59,15 @@ node scripts/evaluate-readiness.mjs < request.json
 
 ## Deploy the live dashboard
 
-The Pages Function makes outbound requests to the public Pharos MCP endpoint; no MCP credential is required. After authenticating with Wrangler and creating a Cloudflare Pages project, deploy the static page and function with:
+The dashboard is a Cloudflare Pages project with a Pages Function in `functions/`. Pages Functions are deployed through Git integration, not through `wrangler pages deploy` (that command uploads static assets only).
 
-```bash
-npx wrangler pages deploy public --project-name=pharos-transfer-readiness
-```
+1. Push this repository to GitHub.
+2. In the Cloudflare dashboard, create a Pages project and connect it to `arraya20/chain-flow`.
+3. Set the production branch to `main` and the build output directory to `public`. No build command is required.
+4. Cloudflare detects `functions/` at the repository root and deploys `/api/flow` alongside the static assets.
+5. Attach the custom domain `chain-flow.nampharos.web.id`, or use the generated `*.pages.dev` URL.
+
+The Pages Function makes outbound requests to the public Pharos MCP endpoint at `https://mcp.pharos.xyz/mcp`; no MCP credential is required.
 
 The local `npm run dev` preview compiles and serves the Pages Function from `functions/`.
 
